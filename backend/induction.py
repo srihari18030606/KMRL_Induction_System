@@ -1,74 +1,133 @@
-def evaluate_trains(trains, branding_weight=2, mileage_weight=3, risk_weight=5):
-    selected = []
-    rejected = []
+def evaluate_trains(trains, traffic_level=3):
 
-    # First filter valid trains (for mileage normalization)
-    valid_trains = [
-        t for t in trains
-        if t.fitness_valid and not t.open_job_card and t.cleaning_available
-    ]
+    HARD_MAINTENANCE_LIMIT = 30000
 
-    # If no valid trains
-    if not valid_trains:
-        return [], [
-            {
-                "train": t.name,
-                "reasons": [
-                    reason for reason in [
-                        "Fitness expired" if not t.fitness_valid else None,
-                        "Open job card" if t.open_job_card else None,
-                        "Cleaning not available" if not t.cleaning_available else None
-                    ] if reason is not None
-                ]
-            }
-            for t in trains
-        ]
+    service = []
+    standby = []
+    maintenance = []
 
-    # Find maximum mileage among valid trains
-    max_mileage = max(t.mileage for t in valid_trains)
-
-    # Avoid division by zero
-    if max_mileage == 0:
-        max_mileage = 1
+    # ---------------------------
+    # STEP 1: HARD SAFETY FILTER
+    # ---------------------------
+    eligible = []
 
     for train in trains:
         reasons = []
 
-        # Hard constraints
         if not train.fitness_valid:
-            reasons.append("Fitness expired")
+            reasons.append("Fitness certificate invalid")
 
         if train.open_job_card:
-            reasons.append("Open job card")
+            reasons.append("Open job card pending")
 
-        if not train.cleaning_available:
-            reasons.append("Cleaning not available")
+        if not train.cleaning_completed:
+            reasons.append("Cleaning not completed")
+
+        if train.mileage > HARD_MAINTENANCE_LIMIT:
+            reasons.append("Exceeded maximum safe mileage limit")
+
+        if train.sensor_alert:
+            reasons.append("IoT sensor alert detected")
 
         if reasons:
-            rejected.append({"train": train.name, "reasons": reasons})
-        else:
-            # Prefer lower mileage
-            mileage_score = (1 - (train.mileage / max_mileage)) * 100
-
-            # Maintenance risk
-            maintenance_risk = 1 if train.mileage > 25000 else 0
-
-            score = (
-                train.branding_priority * branding_weight
-                + mileage_score * mileage_weight
-                - maintenance_risk * risk_weight
-            )
-
-            selected.append({
+            maintenance.append({
                 "train": train.name,
-                "score": round(score, 2),
-                "details": {
-                    "branding": train.branding_priority,
-                    "mileage_score": round(mileage_score, 2),
-                    "maintenance_risk": maintenance_risk
-                }
+                "category": "maintenance",
+                "why": f"Sent to maintenance because: {', '.join(reasons)}"
+            })
+        else:
+            eligible.append(train)
+
+    if not eligible:
+        return {
+            "service": [],
+            "standby": [],
+            "maintenance": maintenance
+        }
+
+    # ---------------------------
+    # STEP 2: FIXED SCORING
+    # ---------------------------
+    max_mileage = max(t.mileage for t in eligible)
+    if max_mileage == 0:
+        max_mileage = 1
+
+    max_branding = max(t.branding_priority for t in eligible)
+    if max_branding == 0:
+        max_branding = 1
+
+    scored = []
+
+    for train in eligible:
+
+        mileage_factor = 1 - (train.mileage / max_mileage)
+        branding_factor = train.branding_priority / max_branding
+
+        score = (mileage_factor * 0.7) + (branding_factor * 0.3)
+
+        scored.append({
+            "train": train.name,
+            "score": round(score, 3),
+            "mileage": train.mileage,
+            "branding": train.branding_priority
+        })
+
+    scored.sort(key=lambda x: x["score"], reverse=True)
+
+    # ---------------------------
+    # STEP 3: TRAFFIC-BASED SERVICE SPLIT
+    # ---------------------------
+    demand_map = {
+        1: 0.4,
+        2: 0.55,
+        3: 0.7,
+        4: 0.85,
+        5: 0.95
+    }
+
+    percentage = demand_map.get(traffic_level, 0.7)
+    service_count = round(len(scored) * percentage)
+
+    # Ensure at least 1 standby if more than 1 eligible
+    if len(scored) > 1 and service_count >= len(scored):
+        service_count = len(scored) - 1
+
+    if service_count == 0 and len(scored) > 0:
+        service_count = 1
+
+    # ---------------------------
+    # STEP 4: CATEGORIZE + PARKING
+    # ---------------------------
+    current_slot = 1
+
+    for index, train in enumerate(scored):
+
+        explanation = (
+            f"Cleared all safety checks. "
+            f"Mileage: {train['mileage']} km (lower mileage preferred). "
+            f"Branding priority: {train['branding']}. "
+            f"Composite score: {train['score']}."
+        )
+
+        if index < service_count:
+            service.append({
+                "train": train["train"],
+                "score": train["score"],
+                "parking_slot": current_slot,
+                "why": explanation + " Selected for service due to highest operational suitability."
+            })
+        else:
+            standby.append({
+                "train": train["train"],
+                "score": train["score"],
+                "parking_slot": current_slot,
+                "why": explanation + " Assigned to standby to maintain operational buffer."
             })
 
-    selected = sorted(selected, key=lambda x: x["score"], reverse=True)
+        current_slot += 1
 
-    return selected, rejected
+    return {
+        "service": service,
+        "standby": standby,
+        "maintenance": maintenance
+    }

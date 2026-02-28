@@ -30,29 +30,17 @@ from fastapi import Query
 
 @app.get("/generate-induction")
 def generate_induction(
-    branding_weight: int = Query(2),
-    mileage_weight: int = Query(3),
-    risk_weight: int = Query(5),
+    traffic_level: int = 3,
     db: Session = Depends(get_db)
 ):
     trains = crud.get_trains(db)
-    
-    selected, rejected = induction.evaluate_trains(
+
+    result = induction.evaluate_trains(
         trains,
-        branding_weight=branding_weight,
-        mileage_weight=mileage_weight,
-        risk_weight=risk_weight
+        traffic_level=traffic_level
     )
-    
-    return {
-        "weights_used": {
-            "branding_weight": branding_weight,
-            "mileage_weight": mileage_weight,
-            "risk_weight": risk_weight
-        },
-        "selected": selected[:15],
-        "rejected": rejected
-    }
+
+    return result
 
 @app.post("/upload-trains")
 async def upload_trains(file: UploadFile = File(...), db: Session = Depends(get_db)):
@@ -68,7 +56,7 @@ async def upload_trains(file: UploadFile = File(...), db: Session = Depends(get_
             "name": row["name"],
             "fitness_valid": row["fitness_valid"].lower() == "true",
             "open_job_card": row["open_job_card"].lower() == "true",
-            "cleaning_available": row["cleaning_available"].lower() == "true",
+            "cleaning_completed": row["cleaning_completed"].lower() == "true",
             "mileage": float(row["mileage"]),
             "branding_priority": int(row["branding_priority"])
         }
@@ -82,3 +70,66 @@ async def upload_trains(file: UploadFile = File(...), db: Session = Depends(get_
 def reset_database(db: Session = Depends(get_db)):
     crud.delete_all_trains(db)
     return {"message": "All trains deleted successfully"}
+
+from pydantic import BaseModel
+
+class MaximoUpdate(BaseModel):
+    train_name: str
+    open_job_card: bool | None = None
+    fitness_valid: bool | None = None
+
+
+@app.patch("/maximo-update")
+def maximo_update(update: MaximoUpdate, db: Session = Depends(get_db)):
+    train = db.query(models.Train).filter(models.Train.name == update.train_name).first()
+
+    if not train:
+        return {"error": "Train not found"}
+
+    if update.open_job_card is not None:
+        train.open_job_card = update.open_job_card
+
+    if update.fitness_valid is not None:
+        train.fitness_valid = update.fitness_valid
+
+    db.commit()
+    return {"message": "Maximo data updated"}
+
+class IoTUpdate(BaseModel):
+    train_name: str
+    sensor_alert: bool | None = None
+    mileage: float | None = None
+
+
+@app.patch("/iot-update")
+def iot_update(update: IoTUpdate, db: Session = Depends(get_db)):
+    train = db.query(models.Train).filter(models.Train.name == update.train_name).first()
+
+    if not train:
+        return {"error": "Train not found"}
+
+    if update.sensor_alert is not None:
+        train.sensor_alert = update.sensor_alert
+
+    if update.mileage is not None:
+        train.mileage = update.mileage
+
+    db.commit()
+    return {"message": "IoT data updated"}
+
+class CleaningUpdate(BaseModel):
+    train_name: str
+    cleaning_completed: bool
+
+
+@app.patch("/cleaning-update")
+def cleaning_update(update: CleaningUpdate, db: Session = Depends(get_db)):
+    train = db.query(models.Train).filter(models.Train.name == update.train_name).first()
+
+    if not train:
+        return {"error": "Train not found"}
+
+    train.cleaning_completed = update.cleaning_completed
+    db.commit()
+
+    return {"message": "Cleaning status updated"}
