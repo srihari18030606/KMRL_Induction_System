@@ -77,3 +77,8 @@ async def upload_trains(file: UploadFile = File(...), db: Session = Depends(get_
         count += 1
 
     return {"message": f"{count} trains uploaded successfully"}
+
+@app.delete("/reset-database")
+def reset_database(db: Session = Depends(get_db)):
+    crud.delete_all_trains(db)
+    return {"message": "All trains deleted successfully"}

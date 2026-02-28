@@ -2,10 +2,34 @@ def evaluate_trains(trains, branding_weight=2, mileage_weight=3, risk_weight=5):
     selected = []
     rejected = []
 
-    # Calculate average mileage
-    valid_mileages = [t.mileage for t in trains if t.fitness_valid and not t.open_job_card and t.cleaning_available]
-    
-    avg_mileage = sum(valid_mileages) / len(valid_mileages) if valid_mileages else 0
+    # First filter valid trains (for mileage normalization)
+    valid_trains = [
+        t for t in trains
+        if t.fitness_valid and not t.open_job_card and t.cleaning_available
+    ]
+
+    # If no valid trains
+    if not valid_trains:
+        return [], [
+            {
+                "train": t.name,
+                "reasons": [
+                    reason for reason in [
+                        "Fitness expired" if not t.fitness_valid else None,
+                        "Open job card" if t.open_job_card else None,
+                        "Cleaning not available" if not t.cleaning_available else None
+                    ] if reason is not None
+                ]
+            }
+            for t in trains
+        ]
+
+    # Find maximum mileage among valid trains
+    max_mileage = max(t.mileage for t in valid_trains)
+
+    # Avoid division by zero
+    if max_mileage == 0:
+        max_mileage = 1
 
     for train in trains:
         reasons = []
@@ -23,12 +47,10 @@ def evaluate_trains(trains, branding_weight=2, mileage_weight=3, risk_weight=5):
         if reasons:
             rejected.append({"train": train.name, "reasons": reasons})
         else:
-            # Mileage balance score (closer to average is better)
-            mileage_diff = abs(train.mileage - avg_mileage)
-            # mileage_score = max(0, 100 - mileage_diff)
-            mileage_score = max(0, (1 - (mileage_diff / 30000)) * 100)
+            # Prefer lower mileage
+            mileage_score = (1 - (train.mileage / max_mileage)) * 100
 
-            # Maintenance risk (simulate)
+            # Maintenance risk
             maintenance_risk = 1 if train.mileage > 25000 else 0
 
             score = (
@@ -39,10 +61,10 @@ def evaluate_trains(trains, branding_weight=2, mileage_weight=3, risk_weight=5):
 
             selected.append({
                 "train": train.name,
-                "score": score,
+                "score": round(score, 2),
                 "details": {
                     "branding": train.branding_priority,
-                    "mileage_score": mileage_score,
+                    "mileage_score": round(mileage_score, 2),
                     "maintenance_risk": maintenance_risk
                 }
             })
