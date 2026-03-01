@@ -29,6 +29,9 @@ def evaluate_trains(trains, traffic_level=3):
         if train.sensor_alert:
             reasons.append("IoT sensor alert detected")
 
+        if train.override_status=="maintenance":
+            reasons.append("Supervisor forced maintenance")
+
         if reasons:
             maintenance.append({
                 "train": train.name,
@@ -44,6 +47,7 @@ def evaluate_trains(trains, traffic_level=3):
             "standby": [],
             "maintenance": maintenance
         }
+    eligible_map={t.name: t for t in eligible}
 
     # ---------------------------
     # STEP 2: FIXED SCORING
@@ -65,6 +69,8 @@ def evaluate_trains(trains, traffic_level=3):
 
         score = (mileage_factor * 0.7) + (branding_factor * 0.3)
 
+        score=max(0,min(score,1))
+
         scored.append({
             "train": train.name,
             "score": round(score, 3),
@@ -72,7 +78,9 @@ def evaluate_trains(trains, traffic_level=3):
             "branding": train.branding_priority
         })
 
-    scored.sort(key=lambda x: x["score"], reverse=True)
+    # scored.sort(key=lambda x: x["score"], reverse=True)
+    # scored.sort(key=lambda x:
+    scored.sort(key=lambda x: (-x["score"], x["mileage"], x["train"]))
 
     # ---------------------------
     # STEP 3: TRAFFIC-BASED SERVICE SPLIT
@@ -85,7 +93,7 @@ def evaluate_trains(trains, traffic_level=3):
         5: 0.95
     }
 
-    percentage = demand_map.get(traffic_level, 0.7)
+    percentage = demand_map[traffic_level]
     service_count = round(len(scored) * percentage)
 
     # Ensure at least 1 standby if more than 1 eligible
@@ -95,34 +103,99 @@ def evaluate_trains(trains, traffic_level=3):
     if service_count == 0 and len(scored) > 0:
         service_count = 1
 
+        # ---------------------------
+    # STEP 4: INITIAL CATEGORIZATION
     # ---------------------------
-    # STEP 4: CATEGORIZE + PARKING
-    # ---------------------------
-    current_slot = 1
+
+    ranked_service = []
+    ranked_standby = []
 
     for index, train in enumerate(scored):
+        if index < service_count:
+            ranked_service.append(train)
+        else:
+            ranked_standby.append(train)
 
+    # ---------------------------
+    # STEP 5: APPLY SUPERVISOR STANDBY OVERRIDE
+    # ---------------------------
+
+    final_service = []
+    final_standby = []
+
+    # Move overridden trains to standby
+        # First process ranked_service (keep non-forced in service)
+    forced_standby = []
+
+    for train in ranked_service:
+        original_train = eligible_map[train["train"]]
+
+        if original_train.override_status == "standby":
+            train["forced"] = True
+            forced_standby.append(train)
+        else:
+            train["forced"] = False
+            final_service.append(train)
+
+    # Add normal ranked standby trains first
+    for train in ranked_standby:
+        train["forced"] = False
+        final_standby.append(train)
+
+    # Then add forced standby trains at the END
+    final_standby.extend(forced_standby)
+
+    while len(final_service)<service_count and len(final_standby)>0:
+        promoted_train=final_standby.pop(0)
+        promoted_train["forced"]=False
+        final_service.append(promoted_train)
+
+    # ---------------------------
+    # STEP 6: ASSIGN PARKING SLOTS
+    # ---------------------------
+
+    current_slot = 1
+
+    for train in final_service:
         explanation = (
             f"Cleared all safety checks. "
             f"Mileage: {train['mileage']} km (lower mileage preferred). "
             f"Branding priority: {train['branding']}. "
-            f"Composite score: {train['score']}."
+            f"Composite score: {train['score']}. "
+            f"Selected for service due to highest operational suitability."
         )
 
-        if index < service_count:
-            service.append({
-                "train": train["train"],
-                "score": train["score"],
-                "parking_slot": current_slot,
-                "why": explanation + " Selected for service due to highest operational suitability."
-            })
+        service.append({
+            "train": train["train"],
+            "score": train["score"],
+            "parking_slot": current_slot,
+            "why": explanation
+        })
+
+        current_slot += 1
+
+    for train in final_standby:
+
+        if train.get("forced", False):
+            explanation = (
+            f"Cleared all safety checks. "
+            f"Supervisor forced standby override applied."
+            )
         else:
-            standby.append({
-                "train": train["train"],
-                "score": train["score"],
-                "parking_slot": current_slot,
-                "why": explanation + " Assigned to standby to maintain operational buffer."
-            })
+            explanation = (
+            f"Cleared all safety checks. "
+            f"Mileage: {train['mileage']} km. "
+            f"Branding priority: {train['branding']}. "
+            f"Composite score: {train['score']}. "
+            f"Assigned to standby based on ranking."
+            )
+
+        standby.append({
+            "train": train["train"],
+            "score": train["score"],
+            "parking_slot": current_slot,
+            "why": explanation
+        })
 
         current_slot += 1
 
